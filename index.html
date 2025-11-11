@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>실전 티켓팅 연습 (v4 - 안정화)</title>
+    
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen,
+                Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            background-color: #f4f7f6;
+            margin: 0;
+            color: #333;
+        }
+        .ticket-container {
+            background-color: #ffffff;
+            padding: 40px;
+            border-radius: 12px;
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.1);
+            text-align: center;
+            width: 380px;
+        }
+        h1 {
+            margin-top: 0;
+            color: #1a1a1a;
+            font-size: 1.8em;
+        }
+        p.info {
+            line-height: 1.6;
+            color: #555;
+            font-size: 1.1em;
+        }
+        #ticket-button {
+            width: 100%;
+            padding: 16px;
+            font-size: 1.3em;
+            font-weight: 700;
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            transition: background-color 0.2s, opacity 0.2s, transform 0.1s;
+        }
+        #ticket-button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+            opacity: 0.8;
+        }
+        #ticket-button.enabled {
+            background-color: #e6007e;
+            cursor: pointer;
+            animation: pulse 0.5s 1;
+        }
+        #ticket-button.enabled:hover {
+            background-color: #c0006a;
+        }
+        #ticket-button.enabled:active {
+            transform: scale(0.98);
+        }
+        @keyframes pulse {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.03); }
+            100% { transform: scale(1); }
+        }
+        #status-message {
+            margin-top: 20px;
+            font-size: 1.1em;
+            font-weight: 600;
+            height: 3.5em;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            line-height: 1.4;
+        }
+        .status-success { color: #28a745; }
+        .status-failure { color: #dc3545; }
+        #processing-modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.6);
+            align-items: center;
+            justify-content: center;
+        }
+        .modal-content {
+            background-color: #fff;
+            padding: 25px 35px;
+            border-radius: 10px;
+            text-align: center;
+            display: flex;
+            align-items: center;
+            gap: 18px;
+            font-size: 1.1em;
+        }
+        .spinner {
+            width: 28px;
+            height: 28px;
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #3498db;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .footer-notice {
+            position: fixed;
+            bottom: 10px;
+            left: 0;
+            width: 100%;
+            text-align: center;
+            font-size: 0.8em;
+            color: #aaa;
+            z-index: 5;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="ticket-container">
+        <h1>실전 티켓팅 연습</h1>
+        <p class="info">
+            서버 시간 기준<br>
+            <strong><span id="target-time-display">--:--:--</span></strong>
+            <br>에 티켓팅이 시작됩니다.
+        </p>
+        
+        <button id="ticket-button" disabled>다음 티켓팅 대기</button>
+        
+        <div id="status-message">
+            매시 00, 10, 20, 30, 40, 50분에 시작됩니다.
+        </div>
+    </div>
+
+    <div id="processing-modal">
+        <div class="modal-content">
+            <div class="spinner"></div>
+            <p>처리 중입니다...</p>
+        </div>
+    </div>
+
+    <div class="footer-notice">
+        timeapi.io 또는 worldtimeapi.org 서버시간을 기준하여 로딩합니다
+    </div>
+    
+    <script>
+        // DOM 요소
+        const ticketButton = document.getElementById('ticket-button');
+        const statusMessage = document.getElementById('status-message');
+        const targetTimeDisplay = document.getElementById('target-time-display');
+        const processingModal = document.getElementById('processing-modal');
+
+        // 전역 변수
+        let timeOffset = 0;
+        let ticketOpenTime = 0;
+        let countdownInterval = null;
+
+        /**
+         * 1. 서버 시간 동기화 (수정됨: Fallback 로직 추가)
+         * timeapi.io (UTC)를 먼저 시도하고, 실패 시 worldtimeapi.org (UTC)를 시도합니다.
+         */
+        async function syncTime() {
+            let serverNow = 0;
+
+            try {
+                // --- 1순위: timeapi.io 시도 (UTC) ---
+                console.log("1순위: timeapi.io (UTC) 시도 중...");
+                const response = await fetch('https://timeapi.io/api/Time/current/utc');
+                if (!response.ok) throw new Error('timeapi.io 응답 실패');
+                
+                const data = await response.json();
+                serverNow = new Date(data.dateTime).getTime(); 
+                console.log("1순위 timeapi.io 성공!");
+
+            } catch (error1) {
+                console.warn("1순위 timeapi.io 실패:", error1);
+                
+                try {
+                    // --- 2순위: worldtimeapi.org 시도 (UTC) ---
+                    console.log("2순위: worldtimeapi.org (UTC) 시도 중...");
+                    const response = await fetch('https://worldtimeapi.org/api/timezone/Etc/UTC');
+                    if (!response.ok) throw new Error('worldtimeapi.org 응답 실패');
+
+                    const data = await response.json();
+                    // worldtimeapi는 unixtime (초 단위)를 반환
+                    serverNow = data.unixtime * 1000; 
+                    console.log("2순위 worldtimeapi.org 성공!");
+
+                } catch (error2) {
+                    console.error("2순위 worldtimeapi.org도 실패:", error2);
+                    // --- 두 API 모두 실패한 경우 ---
+                    statusMessage.textContent = "서버 시간을 불러올 수 없습니다. 새로고침하세요.";
+                    return; // 함수 종료
+                }
+            }
+
+            // --- 여기부터는 API 호출 성공 시 로직 (기존과 거의 동일) ---
+            
+            const localNow = Date.now();
+            timeOffset = serverNow - localNow; // 서버 시간과 로컬 시간의 차이 계산
+
+            // '보정된' 현재 시간 (UTC 기준)
+            const currentServerTime = new Date(localNow + timeOffset);
+
+            // 2. 다음 10분 단위의 목표 시간 계산
+            // KST(UTC+9)가 아닌 UTC 기준으로 계산해도
+            // 10분 단위로 넘어가는 것은 동일하므로 로직 변경 없음.
+            const targetTime = new Date(currentServerTime.getTime());
+            const currentMinutes = targetTime.getUTCMinutes(); // UTC 분 기준으로 계산
+            const targetMinutes = Math.floor(currentMinutes / 10) * 10 + 10;
+            
+            targetTime.setUTCMinutes(targetMinutes, 0, 0); // UTC 분 기준으로 설정
+
+            // 3. UI 업데이트
+            // targetTime 객체를 toLocaleString('ko-KR')로 표시하면
+            // 브라우저가 알아서 KST(UTC+9)로 변환하여 보여줍니다.
+            targetTimeDisplay.textContent = targetTime.toLocaleString('ko-KR', {
+                hour: '2-digit', minute: '2-digit', second: '2-digit'
+            });
+            statusMessage.innerHTML = "매시 00, 10, 20, 30, 40, 50분에 시작됩니다.";
+            statusMessage.className = '';
+            ticketButton.disabled = true;
+            ticketButton.textContent = '다음 티켓팅 대기';
+            ticketButton.className = '';
+            
+            if (countdownInterval) clearInterval(countdownInterval);
+            
+            startCountdown(targetTime); // 카운트다운 시작
+        }
+
+        // 2. 카운트다운 실행 (내부 로직)
+        function startCountdown(targetTime) {
+            
+            countdownInterval = setInterval(() => {
+                const estimatedServerTime = Date.now() + timeOffset;
+                const remainingTime = targetTime.getTime() - estimatedServerTime;
+
+                // --- 티켓팅 시간 도달 ---
+                if (remainingTime <= 0) {
+                    clearInterval(countdownInterval);
+                    
+                    ticketButton.disabled = false;
+                    ticketButton.textContent = '지금 클릭!';
+                    ticketButton.className = 'enabled';
+                    statusMessage.innerHTML = '<strong>--- 지금입니다! ---</strong>';
+                    
+                    ticketOpenTime = targetTime.getTime(); 
+                    return;
+                }
+            }, 100); // 0.1초마다 갱신
+        }
+
+        // 3. 티켓팅 버튼 클릭 이벤트 처리
+        function handleTicketingClick() {
+            if (ticketButton.disabled) return;
+
+            ticketButton.disabled = true;
+            ticketButton.className = '';
+            statusMessage.textContent = ''; 
+
+            showProcessingModal(true);
+
+            const clickServerTime = Date.now() + timeOffset;
+            const reactionMs = clickServerTime - ticketOpenTime;
+
+            setTimeout(() => {
+                showProcessingModal(false); 
+
+                const luck = Math.random();
+                
+                if (reactionMs > 2000) {
+                    showResult(false, `실패! (반응 속도: ${reactionMs}ms)<br>너무 늦었습니다. (2초 이상)`);
+                } else if (luck < 0.2) { 
+                    showResult(false, `실패! (반응 속도: ${reactionMs}ms)<br>서버 접속에 실패했습니다. (튕김)`);
+                } else {
+                    showResult(true, `클릭 성공! (반응 속도: ${reactionMs}ms)`);
+                }
+
+                setTimeout(syncTime, 5000); 
+            }, 1500);
+        }
+
+        // 4. 모달 표시/숨기기
+        function showProcessingModal(show) {
+            processingModal.style.display = show ? 'flex' : 'none';
+        }
+
+        // 5. 결과 표시
+        function showResult(isSuccess, message) {
+            statusMessage.innerHTML = message;
+            if (isSuccess) {
+                statusMessage.className = 'status-success';
+                ticketButton.textContent = '예매 성공';
+            } else {
+                statusMessage.className = 'status-failure';
+                ticketButton.textContent = '예매 실패';
+            }
+        }
+
+        // --- 스크립트 실행 ---
+        ticketButton.addEventListener('click', handleTicketingClick);
+        syncTime(); // 페이지 로드 시 즉시 시작
+    
+    </script>
+</body>
+</html>
